@@ -1,0 +1,221 @@
+---
+title: "VAR Project"
+author: "Julia Pratt"
+date: "`r format(Sys.Date(),'%B %d, %Y')`"
+output: 
+  html_document:
+    df_print: paged
+    code_folding: "hide"
+    toc: no
+    fig_caption: yes
+    theme: journal
+    toc_float: no 
+---
+
+Github page: [link](https://juliapratt.github.io/juliarpratt.github.io/)
+
+```{r setup, include=FALSE }
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+graphics.off()
+```
+
+```{r downloading projects, message=FALSE, warning=FALSE}
+require(fpp3)
+require(tidyverse)
+require(dplyr)
+require(tidyquant)
+require(lubridate)
+require(timetk)
+require(urca)
+require(vars)
+require(lmtest)
+require(kableExtra)
+require(frequencyConnectedness)
+require(stargazer)
+require(tsDyn)
+```
+
+```{r data , message =FALSE}
+VarList <- c("FLBPPRIVSA", "FLCONS")
+var0 <- tq_get(VarList, get = "economic.data", from = "1999-01-01", to= "2021-02-01") %>%
+ pivot_wider(names_from = symbol, values_from = price) %>% 
+  as_tsibble()
+var1 <- tq_get(VarList, get = "economic.data", from = "1999-01-01") %>%
+   mutate(Month = yearmonth(date)) %>% dplyr::select(-date) %>%
+  as_tsibble(index = Month, key = symbol)
+var2 <- var1 %>%
+   pivot_wider(names_from = symbol, values_from = price) %>%
+  as_tsibble()
+```
+
+
+### Introduction 
+
+The US economy is constantly fluctuating. Changes in sectors of the economy can have a large (or small) impact on other sectors. In order to have a comprehensive understanding of the behaviors of the economy, we must have a strong grasp of the relationship between certain industries and sectors. 
+
+This paper will evaluate the relationship between the number of newly authorized Florida housing build permits (FLBPPRIVSA) and the total number of employees working in the construction sector in Florida (FLCONS, measured in thousands). Data for these variables was sourced from FRED (St. Louis Federal Reserve), restricted to include data from January 1999 - January 2020, and both variables have been seasonally adjusted.
+
+Intuitively, we can estimate there will be a somewhat strong positive relationship between build permits and construction employment. As the number of build permits applied for in Florida increases, it is expected that employment opportunities in construction will increase as a direct result. Although this argument seems logical, it is important to evaluate this relationship analytically to truly grasp the pattern and causality.
+
+
+### Plots
+
+Below are the visual depictions of each variable over our data period. The shape of each variable's line shows that Florida housing build permits and Florida construction employment persistently follow the same pattern, experiencing the same peaks and dips consistent with the recession and preceding housing boom. As expected, changes in Florida building permits seems to have a causal effect on the number of persons employed in construction. Construction employment experiences the same changes as building permits with a slight lag. The significant decrease in housing permits during the recession lead to a decrease of the same magnitude in construction employment, exemplary of our relationship prediction.
+
+Although the relationship between our variables seems strong through our visualization, we must interpret the relationship further using a VAR or VECM model.
+
+```{r our plot}
+var1 %>% ggplot(aes(x = Month, y = price)) +
+  geom_line() +
+  facet_grid(vars(symbol), scales = "free_y") +
+  labs(y = " ")
+```
+
+
+#### VAR or VECM model?
+
+Vector Auto Regression (VAR) models are useful in analyzing the effects shocks in variables may have on other variables. The VAR model assumes that variables are stationary and there is a linear relationship present.
+In order to fully understand how connected the relationship between the variables is and gauge the spillover from a change in one variable to the other, VAR models are the optimal choice.
+
+Vector Error Correction Models (VECM) are used for cases in which the variables are nonstationary and share a common trend (cointegration). That is, there is a long-run relationship present between the variables. The VECM estimation can be used to evaluate the causal effect of a variable unto another.
+
+In order to determine which model is best suited for our data, we must run a unit root test and Dickey-Fuller test.  If we find that the variables are nonstationary, contain a unit root, and are cointegrated, the VECM model should be used. If the variables are stationary and no cointegration is present, the VAR model should be estimated.
+
+
+### Unit Root Tests
+
+The simple unit root test below shows that both Florida build permits and Florida construction employment have 1 unit root. Unit roots allow us to evaluate the consistency of a variable's pattern. 
+
+
+```{r unitRoots}
+var1 %>% 
+  features(price, unitroot_ndiffs) %>% 
+  kable(format = "html", table.attr = "style='width:30%;' ") %>% 
+  kableExtra::kable_styling()
+```
+
+
+To further investigate how stationary the variables are, we can utilize a Dickey-Fuller test. The null hypothesis for a Dickey-Fuller test is that the variables do contain a unit root and are stationary. We will also run a Dickey-Fuller test on the residuals of our model to test for unit roots, which indicates cointegration of the variables. 
+
+\begin{align}
+  H_o: & \ \rho = 0 \text{, implying that there is a unit root (variable is nonstationary)} \\
+  H_a: & \ \rho \neq 0 \text{, implying that there is no unit root (variable is stationary).} 
+\end{align}
+
+
+```{r unlistvars}
+y <- (var0[,c(2)])
+flpermits <- as.numeric(unlist(y))
+
+x <- (var0[,c(3)])
+flconst <- as.numeric(unlist(x))
+```
+
+```{r URs}
+ur.permit <- ur.df(flpermits, type = "drift", selectlags = "BIC") 
+
+ur.const <- ur.df(flconst, type = "drift", selectlags = "BIC") 
+```
+
+
+``` {r cointtt}
+coint.out <- 
+  lm(flconst  ~ flpermits)
+```
+
+```{r resid}
+coint.resids <- coint.out$residuals
+ur.resids <- ur.df(coint.resids, type = "drift", selectlags = "BIC")
+```
+
+
+The Dickey-Fuller tests for each variable depict very low p-values, suggesting that we reject the null hypothesis that the variables are nonstationary. The Dickey-Fuller test for cointegration also gives a low p-value, therefore we can assume that our variables are not cointegrated.
+
+Because our variables are stationary and have no cointegration, we can move forward using the VAR model. 
+
+
+### VAR Model
+
+Selecting a VAR model assumes that a linear relationship between current and past values of the variables has been established. By moving forward with the VAR model estimation, our main purpose will be investigating the causality between Florida building permits and Florida construction employment. 
+
+```{r growth rates, results='hide'}
+growth <- var2 %>%
+  mutate(gCONS = 100 * difference(log(FLCONS)), 
+         gFLA  = 100 * difference(log(FLBPPRIVSA)),
+          ) %>% 
+        dplyr::select(gCONS,gFLA) %>% 
+        tidyr::drop_na() 
+```
+
+```{r gr plot}
+growthr <- as.ts(growth)
+plot.ts(growthr,main="Construction Employment & Housing Permits: Monthly Growth")
+```
+```{r lagLength}
+manu <- growthr[,c(2,1)]
+lags1 <- VARselect(growthr,lag.max=12,type="const")
+p <- lags1$selection[2] 
+```
+
+
+```{r VAR}
+var.data <- VAR(growthr, p=p, type="const")
+```
+
+
+We will be using a Granger Causality test to determine how useful each variable will be in forecasting the other. The result for each test is below; we reject the null hypothesis that Florida housing build permits growth does not cause Florida construction employment growth, and accept the null hypothesis that growth in construction does not cause growth in number of permits. The output confirms our prior expectations that increases or decreases in Florida housing build permits has an impact on Florida construction employment. We can assume that the number of Florida housing build permits gives an accurate estimation in the changes of the number of Floridians working in construction. 
+
+
+```{r GrangerCausalty, message=FALSE}
+require(lmtest)
+cat("H0: gFLCONS does not cause gFLBPPRIVSA,  H1: it does \n")
+grangertest(gCONS ~ gFLA,order=p,data=manu)
+cat("\nH0: gFLBPPRIVSA does not cause gFLCONS,  H1: it does\n")
+grangertest(gFLA ~ gCONS,order=p,data=manu)
+```
+
+
+### How Strong is the Causal Relationship?
+
+
+To evaluate the strength of the causal relationship between Florida housing permits and construction employment, we can run a FEVD model, IRF model, and rolling spillover index. The forecast error variance decomposition (FEVD) model shows the variance in the pattern for each variable and how reliant that pattern is on each other. An Impulse Response Function (IRF) model measures the impact of a shock in one variable on the other. The spillover plot depicts the connectedness between the variables.
+
+```{r FEVD}
+plot(fevd(var.data, n.ahead = 24))
+```
+
+
+The output from the FEVD model above shows that very little of the variance in each variable is explained by the other. 
+
+```{r irffla}
+irf.fla <- irf(var.data, n.ahead = 12)
+
+plot(irf.fla)
+```
+
+The IRF model output depicts the reaction from each variable when there is a shock in the other. Shocks to housing permits does not seem to cause too much movement in construction employment. Movement in both variables even out to a constant state after each shock. 
+
+```{r spill}
+spilloverDY12(var.data, n.ahead = 100, no.corr = FALSE) 
+```
+
+```{r Spillover Graph}
+sproll <- spilloverRollingDY12(data = growthr, n.ahead = 120, no.corr = F, 
+func_est = "VAR", params_est = list(p = p, type = "const"), window = 84)
+
+spillover <- overall(sproll)
+spillovers <- index(growthr)[84:length(index(growthr))]
+plot(spillovers,spillover[[1]],type="l",xlab="",ylab = "Total Connectedness", main = "Rolling Spillover Index")
+```
+
+The spillover plot shows that the variables have very high or low connectedness at different points in time. 
+
+
+We know that Florida housing build permits and Florida construction employment share a relationship, but the tests above show that construction employment may not be as reliant on permits as previously expected.
+
+
+### Conclusion 
+
+The series of models and tests above prove that there is a relationship between Florida housing build permits and Florida construction employment, which is consistent with conventional knowledge of industry growth and employment growth. In this case, the VAR model was the optimal choice compared to the VECM when evaluating the relationship between our variables. As expected, the Granger Causality tests proved that growth of permits has an effect on growth in construction employment. However, when running the FEVD, IRF, and spillover models to evaluate the strength of the relationship, it was found that there may not be as much connectedness or direct impact shared between the variables. Nonetheless, the relationship is dynamic, and Florida housing build permits would be useful in forecasting Florida construction employment.
+
